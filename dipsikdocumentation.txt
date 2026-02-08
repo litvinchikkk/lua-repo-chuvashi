@@ -1,0 +1,589 @@
+Документация по созданию Lua скриптов для ESP-читов Standoff 2
+
+Оглавление
+
+1. Введение
+2. Базовый скрипт
+3. Доступные функции
+4. Примеры скриптов
+5. Оптимизация и советы
+6. Структура проекта
+7. FAQ
+
+Введение
+
+Эта документация описывает как создавать Lua скрипты для ESP-читов на базе предоставленного кода. Скрипты выполняются внутри читовой программы и имеют доступ к игровой памяти и функциям отрисовки.
+
+Куда класть скрипты
+
+Скрипты нужно класть в папку: /sdcard/chuvashi/scripts/
+Название файла должно заканчиваться на .lua
+
+Базовый скрипт
+
+Вот минимальный рабочий скрипт, который можно использовать как шаблон:
+
+```lua
+-- Обязательная функция update - вызывается каждый кадр
+function update()
+    -- Получаем список всех игроков
+    local players = getPlayers()
+    
+    -- Проходим по всем игрокам
+    for i, player in ipairs(players) do
+        -- Проверяем что игрок живой
+        if player.health > 0 then
+            -- Отрисовываем игрока
+            drawESP(player)
+        end
+    end
+end
+
+-- Функция для отрисовки ESP конкретного игрока
+function drawESP(player)
+    -- Получаем экранные координаты верхней и нижней точки игрока
+    local screenTopX, screenTopY, visibleTop = worldToScreen(player.x, player.y + 1.67, player.z)
+    local screenBottomX, screenBottomY, visibleBottom = worldToScreen(player.x, player.y, player.z)
+    
+    -- Если игрок не виден - выходим
+    if not visibleTop or not visibleBottom then
+        return
+    end
+    
+    -- Рассчитываем размер бокса
+    local width = math.abs(screenTopX - screenBottomX) * 0.25
+    local height = math.abs(screenTopY - screenBottomY)
+    
+    -- Рисуем бокс
+    local left = math.min(screenTopX, screenBottomX) - width
+    local top = math.min(screenTopY, screenBottomY)
+    local right = math.max(screenTopX, screenBottomX) + width
+    local bottom = math.max(screenTopY, screenBottomY)
+    
+    -- Бокс с обводкой
+    drawRect(left, top, right, bottom, 255, 0, 0, 255, 0.0, 2.0)
+    
+    -- Имя игрока
+    local nameX = (left + right) / 2
+    local nameY = top - 20
+    drawText(player.name, nameX, nameY, 255, 255, 255, 255)
+    
+    -- Здоровье
+    local healthY = bottom - height * (player.health / 100)
+    drawLine(left - 10, bottom, left - 10, healthY, 0, 255, 0, 255, 3.0)
+    
+    -- Оружие
+    drawText(player.weapon, nameX, bottom + 5, 200, 200, 200, 255)
+end
+```
+
+Доступные функции
+
+Функции чтения памяти
+
+```lua
+-- Чтение целого числа по адресу
+local value = readInt(address)
+
+-- Чтение дробного числа по адресу
+local value = readFloat(address)
+
+-- Чтение строки по адресу (макс длина 256 по умолчанию)
+local str = readString(address)
+local str = readString(address, maxLength)  -- с указанием максимальной длины
+```
+
+Функции отрисовки
+
+```lua
+-- Линия
+drawLine(x1, y1, x2, y2, r, g, b, a, thickness)
+-- a - альфа (прозрачность, 0-255, по умолчанию 255)
+-- thickness - толщина (по умолчанию 1.0)
+
+-- Прямоугольник
+drawRect(x1, y1, x2, y2, r, g, b, a, rounding, thickness)
+-- rounding - скругление углов (по умолчанию 0.0)
+-- thickness - толщина (по умолчанию 1.0)
+
+-- Текст
+drawText(text, x, y, r, g, b, a)
+-- Текст центрируется по координатам x,y
+
+-- Заполненный прямоугольник
+-- (используйте drawRect с thickness больше размера прямоугольника)
+```
+
+Игровые данные
+
+```lua
+-- Получение списка игроков
+local players = getPlayers()
+-- Возвращает таблицу с полями:
+-- players[i].address    - адрес игрока в памяти
+-- players[i].x/.y/.z    - позиция в мире
+-- players[i].health     - здоровье (0-100)
+-- players[i].armor      - броня
+-- players[i].name       - никнейм
+-- players[i].weapon     - название оружия
+-- players[i].visible    - видим ли игрок (упрощенная проверка)
+
+-- Конвертация мировых координат в экранные
+local screenX, screenY, visible = worldToScreen(x, y, z)
+
+-- Получение матрицы вида (для расчетов)
+local matrix = getViewMatrix()
+-- Возвращает таблицу-массив из 16 чисел
+
+-- Получение локального игрока
+local localPlayerAddr = getLocalPlayer()
+
+-- Получение PID игры
+local pid = getGamePID()
+
+-- Получение базы il2cpp
+local base = getIl2cppBase()
+
+-- Получение размера экрана
+local screenX, screenY = getScreenSize()
+```
+
+Вспомогательные функции
+
+```lua
+-- Логирование в консоль ADB
+log("Сообщение для отладки")
+
+-- Линейная интерполяция
+local result = lerp(a, b, factor)
+```
+
+Примеры скриптов
+
+1. Радар (мини-карта)
+
+```lua
+local radarSize = 150
+local radarPosX = 50
+local radarPosY = 150
+local radarScale = 0.1  -- метров на пиксель
+
+function update()
+    -- Рисуем фон радара
+    drawRect(radarPosX - radarSize, radarPosY - radarSize, 
+             radarPosX + radarSize, radarPosY + radarSize, 
+             20, 20, 20, 150, 5.0, 2.0)
+    
+    -- Центр (игрок)
+    drawRect(radarPosX - 3, radarPosY - 3, 
+             radarPosX + 3, radarPosY + 3, 
+             0, 255, 0, 255, 1.0, 1.0)
+    
+    local players = getPlayers()
+    local localPlayer = getLocalPlayer()
+    
+    for i, player in ipairs(players) do
+        if player.address ~= localPlayer and player.health > 0 then
+            -- Рассчитываем относительную позицию
+            local relX = (player.x - readFloat(localPlayer + 0x???)) * radarScale
+            local relZ = (player.z - readFloat(localPlayer + 0x???)) * radarScale
+            
+            -- Ограничиваем радиус радара
+            local dist = math.sqrt(relX*relX + relZ*relZ)
+            if dist > radarSize then
+                relX = relX * radarSize / dist
+                relZ = relZ * radarSize / dist
+            end
+            
+            local radarX = radarPosX + relX
+            local radarY = radarPosY + relZ
+            
+            -- Цвет в зависимости от здоровья
+            local r = 255 - player.health * 2.55
+            local g = player.health * 2.55
+            
+            drawRect(radarX - 2, radarY - 2, 
+                     radarX + 2, radarY + 2, 
+                     r, g, 0, 255, 1.0, 1.0)
+        end
+    end
+end
+```
+
+2. ESP только для врагов
+
+```lua
+local teamCheck = true  -- проверять команду
+
+function update()
+    local players = getPlayers()
+    local myPlayer = getLocalPlayer()
+    local myTeam = ""
+    
+    -- Получаем свою команду
+    if myPlayer ~= 0 then
+        myTeam = getPlayerTeam(myPlayer)
+    end
+    
+    for i, player in ipairs(players) do
+        if player.health > 0 then
+            -- Проверка команды
+            if teamCheck then
+                local playerTeam = getPlayerTeam(player.address)
+                if playerTeam == myTeam then
+                    -- Союзник, пропускаем
+                    goto continue
+                end
+            end
+            
+            -- Рисуем ESP для врага
+            drawEnemyESP(player)
+            
+            ::continue::
+        end
+    end
+end
+
+function getPlayerTeam(playerAddr)
+    -- Здесь нужно достать значение команды из памяти
+    -- Это пример, реальные оффсеты могут отличаться
+    local photon = readInt(playerAddr + 0x158)
+    local props = readInt(photon + 0x38)
+    -- ... парсинг свойств
+    return "T"  -- или "CT"
+end
+
+function drawEnemyESP(player)
+    local topX, topY, visibleTop = worldToScreen(player.x, player.y + 1.8, player.z)
+    local bottomX, bottomY, visibleBottom = worldToScreen(player.x, player.y, player.z)
+    
+    if not visibleTop or not visibleBottom then
+        return
+    end
+    
+    local height = math.abs(topY - bottomY)
+    local width = height * 0.4
+    
+    local left = math.min(topX, bottomX) - width/2
+    local right = left + width
+    
+    -- Красный бокс для врагов
+    drawRect(left, topY, right, bottomY, 255, 50, 50, 200, 0.0, 2.0)
+    
+    -- Информация
+    local infoY = topY - 15
+    drawText(player.name .. " [" .. player.health .. "HP]", 
+             (left+right)/2, infoY, 255, 255, 255, 255)
+end
+```
+
+3. Снайперский прицел
+
+```lua
+local crosshairSize = 20
+local crosshairThickness = 2
+
+function update()
+    local screenX, screenY = getScreenSize()
+    local centerX = screenX / 2
+    local centerY = screenY / 2
+    
+    -- Горизонтальная линия
+    drawLine(centerX - crosshairSize, centerY, 
+             centerX + crosshairSize, centerY, 
+             255, 0, 0, 200, crosshairThickness)
+    
+    -- Вертикальная линия
+    drawLine(centerX, centerY - crosshairSize, 
+             centerX, centerY + crosshairSize, 
+             255, 0, 0, 200, crosshairThickness)
+    
+    -- Точка в центре
+    drawRect(centerX - 1, centerY - 1, 
+             centerX + 1, centerY + 1, 
+             255, 255, 0, 255, 0.0, 1.0)
+    
+    -- Получаем текущее оружие для динамического прицела
+    -- (здесь нужны дополнительные функции чтения памяти)
+end
+```
+
+Оптимизация и советы
+
+Производительность
+
+1. Минимизируйте вызовы worldToScreen - эта функция тяжелая
+2. Кэшируйте данные - не читайте одно и то же несколько раз за кадр
+3. Используйте локальные переменные - это быстрее глобальных
+4. Ограничивайте количество отрисовываемых объектов - особенно текста
+
+```lua
+-- ПЛОХО
+for i, player in ipairs(players) do
+    if player.health > 0 then
+        local x, y, visible = worldToScreen(player.x, player.y, player.z)
+        -- ... еще 3 вызова worldToScreen
+    end
+end
+
+-- ХОРОШО
+for i, player in ipairs(players) do
+    if player.health > 0 then
+        -- Один раз получаем все координаты
+        local screenData = getPlayerScreenData(player)
+        -- Используем уже рассчитанные данные
+    end
+end
+```
+
+Безопасность
+
+1. Не палите свой чит - используйте разные ESP для разных матчей
+2. Случайные задержки - добавьте рандомные паузы в логике
+3. Изменяйте цвета - не используйте одни и те же цвета постоянно
+4. Отключайтесь при подозрении - можно добавить проверку на античит
+
+Отладка
+
+```lua
+-- Функция для отладки
+function debugInfo()
+    local players = getPlayers()
+    log("Всего игроков: " .. #players)
+    
+    for i, player in ipairs(players) do
+        log(string.format("Игрок %d: %s, HP: %d, Позиция: %.1f, %.1f, %.1f", 
+            i, player.name, player.health, player.x, player.y, player.z))
+    end
+end
+
+-- Вызывать по кнопке или раз в N кадров
+local debugFrame = 0
+function update()
+    debugFrame = debugFrame + 1
+    if debugFrame % 300 == 0 then  -- раз в 5 секунд при 60 FPS
+        debugInfo()
+    end
+end
+```
+
+Структура проекта
+
+```
+/sdcard/chuvashi/
+├── scripts/          # Ваши Lua скрипты
+│   ├── radar.lua
+│   ├── esp.lua
+│   └── crosshair.lua
+├── repo/            # Кэш репозитория (автоматически)
+└── logs/            # Логи (если добавите логирование)
+```
+
+Рекомендуемая структура скрипта
+
+```lua
+-- Настройки (можно менять в реальном времени)
+local config = {
+    enabled = true,
+    boxColor = {255, 0, 0, 200},
+    showHealth = true,
+    showName = true,
+    showWeapon = false,
+    maxDistance = 100  -- метров
+}
+
+-- Инициализация (вызывается один раз при загрузке)
+function init()
+    log("Скрипт ESP загружен")
+    log("Версия: 1.0")
+    log("Автор: ваш_ник")
+end
+
+-- Основной цикл
+function update()
+    if not config.enabled then
+        return
+    end
+    
+    local players = getPlayers()
+    
+    for i, player in ipairs(players) do
+        processPlayer(player)
+    end
+end
+
+-- Обработка одного игрока
+function processPlayer(player)
+    -- Проверки
+    if player.health <= 0 then return end
+    if not isEnemy(player) then return end
+    
+    -- Отрисовка
+    drawPlayerInfo(player)
+end
+
+-- Проверка враг/союзник
+function isEnemy(player)
+    -- Логика проверки команды
+    return true
+end
+
+-- Отрисовка информации об игроке
+function drawPlayerInfo(player)
+    -- Координаты
+    local topX, topY, visibleTop = worldToScreen(player.x, player.y + 1.7, player.z)
+    local bottomX, bottomY, visibleBottom = worldToScreen(player.x, player.y, player.z)
+    
+    if not visibleTop or not visibleBottom then return end
+    
+    -- Бокс
+    local width = math.abs(topX - bottomX) * 0.3
+    local left = math.min(topX, bottomX) - width
+    local right = left + width * 2
+    local top = math.min(topY, bottomY)
+    local bottom = math.max(topY, bottomY)
+    
+    drawRect(left, top, right, bottom, 
+             config.boxColor[1], config.boxColor[2], 
+             config.boxColor[3], config.boxColor[4], 
+             0.0, 2.0)
+    
+    -- Дополнительная информация
+    if config.showName then
+        drawText(player.name, (left+right)/2, top - 15, 255, 255, 255, 255)
+    end
+    
+    if config.showHealth then
+        drawHealthBar(player, left, top, right, bottom)
+    end
+end
+
+-- Полоска здоровья
+function drawHealthBar(player, left, top, right, bottom)
+    local healthPercent = player.health / 100
+    local barHeight = (bottom - top) * healthPercent
+    local barTop = bottom - barHeight
+    
+    drawRect(left - 8, barTop, left - 4, bottom, 
+             0, 255, 0, 200, 0.0, 1.0)
+end
+
+-- Вызывается при выгрузке скрипта
+function cleanup()
+    log("Скрипт ESP выгружен")
+end
+
+-- Инициализируем
+init()
+```
+
+FAQ
+
+В: Почему скрипт не загружается?
+
+О: Проверьте:
+
+1. Файл имеет расширение .lua
+2. Файл находится в /sdcard/chuvashi/scripts/
+3. В скрипте есть функция update()
+4. Нет синтаксических ошибок (проверьте через luac -p ваш_скрипт.lua)
+
+В: Скрипт работает медленно
+
+О:
+
+1. Уменьшите количество вызовов worldToScreen
+2. Ограничьте отрисовку ближайшими игроками
+3. Увеличьте интервал обновления (обновляйте не каждый кадр)
+
+В: Как добавить новые функции в Lua?
+
+О: Нужно изменить C++ код:
+
+1. Добавить функцию в LuaIntegration.cpp
+2. Зарегистрировать её в RegisterLuaAPI
+3. Перекомпилировать проект
+
+В: Можно ли менять настройки в реальном времени?
+
+О: Да, создайте конфиг-таблицу и меняйте её значения. Можно добавить GUI элементы в будущем.
+
+В: Как отлаживать скрипты?
+
+О: Используйте log() для вывода информации. Смотрите логи через logcat в ADB.
+
+В: Безопасно ли использовать эти скрипты?
+
+О: Нет. Любой чит может привести к бану. Используйте на свой страх и риск.
+
+---
+
+Полезные шаблоны
+
+Шаблон для разных режимов
+
+```lua
+local modes = {
+    ["simple"] = function(player) drawSimpleESP(player) end,
+    ["pro"] = function(player) drawProESP(player) end,
+    ["minimal"] = function(player) drawMinimalESP(player) end
+}
+
+local currentMode = "simple"
+
+function update()
+    local players = getPlayers()
+    
+    for i, player in ipairs(players) do
+        if player.health > 0 then
+            modes[currentMode](player)
+        end
+    end
+end
+```
+
+Шаблон с кэшированием
+
+```lua
+local playerCache = {}
+local cacheTime = 0
+local cacheDuration = 0.5  -- секунд
+
+function update()
+    local currentTime = os.clock()
+    
+    -- Обновляем кэш раз в cacheDuration секунд
+    if currentTime - cacheTime > cacheDuration then
+        updatePlayerCache()
+        cacheTime = currentTime
+    end
+    
+    -- Рисуем из кэша
+    drawFromCache()
+end
+
+function updatePlayerCache()
+    playerCache = {}
+    local players = getPlayers()
+    
+    for i, player in ipairs(players) do
+        if player.health > 0 then
+            local screenData = calculateScreenData(player)
+            playerCache[#playerCache + 1] = {
+                player = player,
+                screen = screenData
+            }
+        end
+    end
+end
+```
+
+---
+латвин: это просто такой пыздец мне лень убирать то что он тут насрал, поетому пока что так, если что-то не работает мне поЗУЙ
+принцип работы:  кидаеш дипсику или какой-то другой нейронке документацию и пишеш что ты хочешь сделать (из всей етой парашной документации получится сделать максимум какойто прицел или чето такое, ну или например нарисовать на экране член и играть так, типо тут функций записи в память нет, и вообще это тотальный кал)
+
+@chuvashi_win
+@chuvashi_win
+@chuvashi_win 
+
+uddddd 0.2€€€ chitka
