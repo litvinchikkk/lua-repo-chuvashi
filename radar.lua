@@ -47,4 +47,4 @@ function update()
     drawText("Radar", radarX, radarY + radarSize + 10, 255, 255, 255, 255)
 end
 
-log("Radar script loaded")
+log("vlal script loaded")
